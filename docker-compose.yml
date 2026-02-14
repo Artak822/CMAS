@@ -1,0 +1,130 @@
+version: '3.8'
+
+services:
+  # PostgreSQL для Users Service
+  users_db:
+    image: postgres:15-alpine
+    container_name: cmas_users_db
+    environment:
+      POSTGRES_DB: ${USERS_DB_NAME}
+      POSTGRES_USER: ${USERS_DB_USER}
+      POSTGRES_PASSWORD: ${USERS_DB_PASSWORD}
+    volumes:
+      - users_db_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL для Rooms Service
+  rooms_db:
+    image: postgres:15-alpine
+    container_name: cmas_rooms_db
+    environment:
+      POSTGRES_DB: ${ROOMS_DB_NAME}
+      POSTGRES_USER: ${ROOMS_DB_USER}
+      POSTGRES_PASSWORD: ${ROOMS_DB_PASSWORD}
+    volumes:
+      - rooms_db_data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL для Requests Service
+  requests_db:
+    image: postgres:15-alpine
+    container_name: cmas_requests_db
+    environment:
+      POSTGRES_DB: ${REQUESTS_DB_NAME}
+      POSTGRES_USER: ${REQUESTS_DB_USER}
+      POSTGRES_PASSWORD: ${REQUESTS_DB_PASSWORD}
+    volumes:
+      - requests_db_data:/var/lib/postgresql/data
+    ports:
+      - "5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Users Service
+  users_service:
+    build:
+      context: .
+      dockerfile: users_service/Dockerfile
+    container_name: cmas_users_service
+    env_file:
+      - .env
+    ports:
+      - "${USERS_SERVICE_PORT}:8001"
+    depends_on:
+      users_db:
+        condition: service_healthy
+    volumes:
+      - ./users_service:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+
+  # Rooms Service
+  rooms_service:
+    build:
+      context: .
+      dockerfile: rooms_service/Dockerfile
+    container_name: cmas_rooms_service
+    env_file:
+      - .env
+    ports:
+      - "${ROOMS_SERVICE_PORT}:8002"
+    depends_on:
+      rooms_db:
+        condition: service_healthy
+    volumes:
+      - ./rooms_service:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
+
+  # Requests Service
+  requests_service:
+    build:
+      context: .
+      dockerfile: requests_service/Dockerfile
+    container_name: cmas_requests_service
+    env_file:
+      - .env
+    ports:
+      - "${REQUESTS_SERVICE_PORT}:8003"
+    depends_on:
+      requests_db:
+        condition: service_healthy
+    volumes:
+      - ./requests_service:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
+
+  # API Gateway
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    container_name: cmas_gateway
+    env_file:
+      - .env
+    ports:
+      - "${GATEWAY_PORT}:8000"
+    depends_on:
+      - users_service
+      - rooms_service
+      - requests_service
+    volumes:
+      - ./gateway:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  users_db_data:
+  rooms_db_data:
+  requests_db_data:
