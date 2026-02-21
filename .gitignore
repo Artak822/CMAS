@@ -60,3 +60,6 @@ docker-compose.override.yml
 @.png
 *.pptx
 YQR.png
+
+.claude/
+.qodo/
