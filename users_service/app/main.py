@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -84,11 +85,14 @@ users_by_email: Dict[str, int] = {}
 
 
 def _hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    # bcrypt has a 72-byte limit; pre-hash to a fixed-length hex string.
+    normalized = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return pwd_context.hash(normalized)
 
 
 def _verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    normalized = hashlib.sha256(plain_password.encode("utf-8")).hexdigest()
+    return pwd_context.verify(normalized, hashed_password)
 
 
 def _create_access_token(user: User) -> tuple[str, int]:
