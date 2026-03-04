@@ -70,7 +70,7 @@ services:
         condition: service_healthy
     volumes:
       - ./users_service:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload"
 
   # Rooms Service
   rooms_service:
@@ -87,7 +87,7 @@ services:
         condition: service_healthy
     volumes:
       - ./rooms_service:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload"
 
   # Requests Service
   requests_service:
@@ -104,7 +104,7 @@ services:
         condition: service_healthy
     volumes:
       - ./requests_service:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload"
 
   # API Gateway
   gateway:

@@ -126,3 +126,27 @@ API:
 - Комендант: видит этаж/общежитие, управляет заселением, обрабатывает заявки.
 - Админ: полный доступ, управление пользователями и ролями.
 
+---
+
+## 🚀 Запуск и миграции
+
+Теперь сервисы работают только через PostgreSQL, без in-memory моков.
+
+Запуск через Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+Миграции Alembic для каждого сервиса применяются автоматически при старте контейнеров:
+- `users_service`: `alembic upgrade head`
+- `rooms_service`: `alembic upgrade head`
+- `requests_service`: `alembic upgrade head`
+
+При необходимости можно запустить вручную:
+
+```bash
+docker compose exec users_service alembic upgrade head
+docker compose exec rooms_service alembic upgrade head
+docker compose exec requests_service alembic upgrade head
+```

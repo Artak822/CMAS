@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from itertools import count
-from typing import Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from .database import get_db
+from .models import CommentORM, MaintenanceRequestORM
 
 app = FastAPI(
     title="Requests Service",
@@ -15,7 +17,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,7 +41,7 @@ class RequestCreate(BaseModel):
 
 class RequestStatusUpdate(BaseModel):
     status: RequestStatus
-    assignee_id: Optional[int] = Field(default=None, ge=1)
+    assignee_id: int | None = Field(default=None, ge=1)
 
 
 class CommentCreate(BaseModel):
@@ -63,32 +64,62 @@ class MaintenanceRequest(BaseModel):
     category: str
     description: str
     status: RequestStatus
-    assignee_id: Optional[int] = None
+    assignee_id: int | None = None
     created_at: datetime
     updated_at: datetime
 
 
 class MaintenanceRequestDetails(MaintenanceRequest):
-    comments: List[Comment] = Field(default_factory=list)
+    comments: list[Comment] = Field(default_factory=list)
 
 
-_request_id = count(1)
-_comment_id = count(1)
-requests_store: Dict[int, MaintenanceRequest] = {}
-comments_store: Dict[int, List[Comment]] = {}
+def _request_to_out(request_item: MaintenanceRequestORM) -> MaintenanceRequest:
+    return MaintenanceRequest(
+        id=request_item.id,
+        student_id=request_item.student_id,
+        room_id=request_item.room_id,
+        category=request_item.category,
+        description=request_item.description,
+        status=RequestStatus(request_item.status),
+        assignee_id=request_item.assignee_id,
+        created_at=request_item.created_at,
+        updated_at=request_item.updated_at,
+    )
 
 
-def _get_request_or_404(request_id: int) -> MaintenanceRequest:
-    request_item = requests_store.get(request_id)
+def _comment_to_out(comment: CommentORM) -> Comment:
+    return Comment(
+        id=comment.id,
+        request_id=comment.request_id,
+        author_id=comment.author_id,
+        text=comment.text,
+        created_at=comment.created_at,
+    )
+
+
+def _get_request_or_404(db: Session, request_id: int) -> MaintenanceRequestORM:
+    request_item = (
+        db.query(MaintenanceRequestORM)
+        .filter(MaintenanceRequestORM.id == request_id)
+        .first()
+    )
     if not request_item:
         raise HTTPException(status_code=404, detail="Request not found")
     return request_item
 
 
-def _request_to_details(request_item: MaintenanceRequest) -> MaintenanceRequestDetails:
+def _request_to_details(
+    db: Session, request_item: MaintenanceRequestORM
+) -> MaintenanceRequestDetails:
+    comments = (
+        db.query(CommentORM)
+        .filter(CommentORM.request_id == request_item.id)
+        .order_by(CommentORM.id.asc())
+        .all()
+    )
     return MaintenanceRequestDetails(
-        **request_item.model_dump(),
-        comments=comments_store.get(request_item.id, []),
+        **_request_to_out(request_item).model_dump(),
+        comments=[_comment_to_out(comment) for comment in comments],
     )
 
 
@@ -104,80 +135,96 @@ async def health_check():
 
 @app.get("/requests", response_model=list[MaintenanceRequest])
 async def list_requests(
-    status: Optional[RequestStatus] = Query(default=None),
-    student_id: Optional[int] = Query(default=None, ge=1),
-    room_id: Optional[int] = Query(default=None, ge=1),
+    status: RequestStatus | None = Query(default=None),
+    student_id: int | None = Query(default=None, ge=1),
+    room_id: int | None = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
 ) -> list[MaintenanceRequest]:
-    items = list(requests_store.values())
+    query = db.query(MaintenanceRequestORM)
     if status is not None:
-        items = [item for item in items if item.status == status]
+        query = query.filter(MaintenanceRequestORM.status == status.value)
     if student_id is not None:
-        items = [item for item in items if item.student_id == student_id]
+        query = query.filter(MaintenanceRequestORM.student_id == student_id)
     if room_id is not None:
-        items = [item for item in items if item.room_id == room_id]
-    return items
+        query = query.filter(MaintenanceRequestORM.room_id == room_id)
+
+    items = query.order_by(MaintenanceRequestORM.id.asc()).all()
+    return [_request_to_out(item) for item in items]
 
 
 @app.get("/requests/{request_id}", response_model=MaintenanceRequestDetails)
-async def get_request(request_id: int) -> MaintenanceRequestDetails:
-    request_item = _get_request_or_404(request_id)
-    return _request_to_details(request_item)
+async def get_request(
+    request_id: int, db: Session = Depends(get_db)
+) -> MaintenanceRequestDetails:
+    request_item = _get_request_or_404(db, request_id)
+    return _request_to_details(db, request_item)
 
 
 @app.post("/requests", response_model=MaintenanceRequestDetails, status_code=201)
-async def create_request(payload: RequestCreate) -> MaintenanceRequestDetails:
+async def create_request(
+    payload: RequestCreate, db: Session = Depends(get_db)
+) -> MaintenanceRequestDetails:
     now = datetime.now(timezone.utc)
-    request_item = MaintenanceRequest(
-        id=next(_request_id),
+    request_item = MaintenanceRequestORM(
         student_id=payload.student_id,
         room_id=payload.room_id,
         category=payload.category,
         description=payload.description,
-        status=RequestStatus.created,
+        status=RequestStatus.created.value,
         assignee_id=None,
         created_at=now,
         updated_at=now,
     )
-    requests_store[request_item.id] = request_item
-    comments_store[request_item.id] = []
-    return _request_to_details(request_item)
+    db.add(request_item)
+    db.commit()
+    db.refresh(request_item)
+    return _request_to_details(db, request_item)
 
 
 @app.put("/requests/{request_id}/status", response_model=MaintenanceRequestDetails)
 async def update_request_status(
     request_id: int,
     payload: RequestStatusUpdate,
+    db: Session = Depends(get_db),
 ) -> MaintenanceRequestDetails:
-    request_item = _get_request_or_404(request_id)
-    updated = request_item.model_copy(
-        update={
-            "status": payload.status,
-            "assignee_id": payload.assignee_id
-            if payload.assignee_id is not None
-            else request_item.assignee_id,
-            "updated_at": datetime.now(timezone.utc),
-        }
-    )
-    requests_store[request_id] = updated
-    return _request_to_details(updated)
+    request_item = _get_request_or_404(db, request_id)
+    request_item.status = payload.status.value
+    if payload.assignee_id is not None:
+        request_item.assignee_id = payload.assignee_id
+    request_item.updated_at = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(request_item)
+    return _request_to_details(db, request_item)
 
 
 @app.get("/requests/room/{room_id}", response_model=list[MaintenanceRequest])
-async def list_requests_by_room(room_id: int) -> list[MaintenanceRequest]:
-    return [item for item in requests_store.values() if item.room_id == room_id]
+async def list_requests_by_room(
+    room_id: int, db: Session = Depends(get_db)
+) -> list[MaintenanceRequest]:
+    items = (
+        db.query(MaintenanceRequestORM)
+        .filter(MaintenanceRequestORM.room_id == room_id)
+        .order_by(MaintenanceRequestORM.id.asc())
+        .all()
+    )
+    return [_request_to_out(item) for item in items]
 
 
 @app.post("/requests/{request_id}/comments", response_model=MaintenanceRequestDetails)
-async def add_comment(request_id: int, payload: CommentCreate) -> MaintenanceRequestDetails:
-    request_item = _get_request_or_404(request_id)
-    comment = Comment(
-        id=next(_comment_id),
+async def add_comment(
+    request_id: int, payload: CommentCreate, db: Session = Depends(get_db)
+) -> MaintenanceRequestDetails:
+    request_item = _get_request_or_404(db, request_id)
+    comment = CommentORM(
         request_id=request_id,
         author_id=payload.author_id,
         text=payload.text,
         created_at=datetime.now(timezone.utc),
     )
-    comments_store.setdefault(request_id, []).append(comment)
-    updated = request_item.model_copy(update={"updated_at": datetime.now(timezone.utc)})
-    requests_store[request_id] = updated
-    return _request_to_details(updated)
+    db.add(comment)
+    request_item.updated_at = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(request_item)
+    return _request_to_details(db, request_item)

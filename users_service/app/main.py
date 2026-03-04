@@ -4,8 +4,6 @@ import hashlib
 import os
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from itertools import count
-from typing import Dict, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +11,10 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from .database import get_db
+from .models import UserORM
 
 app = FastAPI(
     title="Users Service",
@@ -20,7 +22,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -47,16 +48,11 @@ class UserBase(BaseModel):
     full_name: str = Field(..., min_length=2)
     email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     role: UserRole = UserRole.student
-    room_id: Optional[int] = None
+    room_id: int | None = None
 
 
 class UserCreate(UserBase):
     password: str = Field(..., min_length=6)
-
-
-class User(UserBase):
-    id: int
-    password_hash: str
 
 
 class UserOut(UserBase):
@@ -76,16 +72,10 @@ class TokenOut(BaseModel):
 
 
 class AssignRoomIn(BaseModel):
-    room_id: Optional[int] = None
-
-
-_user_id = count(1)
-users: Dict[int, User] = {}
-users_by_email: Dict[str, int] = {}
+    room_id: int | None = None
 
 
 def _hash_password(password: str) -> str:
-    # bcrypt has a 72-byte limit; pre-hash to a fixed-length hex string.
     normalized = hashlib.sha256(password.encode("utf-8")).hexdigest()
     return pwd_context.hash(normalized)
 
@@ -95,13 +85,13 @@ def _verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(normalized, hashed_password)
 
 
-def _create_access_token(user: User) -> tuple[str, int]:
+def _create_access_token(user: UserORM) -> tuple[str, int]:
     now = datetime.now(timezone.utc)
     expire = now + timedelta(minutes=JWT_EXPIRE_MINUTES)
     payload = {
         "sub": str(user.id),
         "email": user.email,
-        "role": user.role.value,
+        "role": user.role,
         "iat": int(now.timestamp()),
         "exp": int(expire.timestamp()),
     }
@@ -109,24 +99,23 @@ def _create_access_token(user: User) -> tuple[str, int]:
     return token, int(timedelta(minutes=JWT_EXPIRE_MINUTES).total_seconds())
 
 
-def _to_user_out(user: User) -> UserOut:
+def _to_user_out(user: UserORM) -> UserOut:
     return UserOut(
         id=user.id,
         full_name=user.full_name,
         email=user.email,
-        role=user.role,
+        role=UserRole(user.role),
         room_id=user.room_id,
     )
 
 
-def _get_user_by_email(email: str) -> Optional[User]:
-    user_id = users_by_email.get(email.lower())
-    if user_id is None:
-        return None
-    return users.get(user_id)
+def _get_user_by_email(db: Session, email: str) -> UserORM | None:
+    return db.query(UserORM).filter(UserORM.email == email.lower()).first()
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+async def get_current_user(
+    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
+) -> UserORM:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid authentication credentials",
@@ -137,23 +126,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     except (JWTError, TypeError, ValueError):
         raise credentials_exception
 
-    user = users.get(user_id)
+    user = db.query(UserORM).filter(UserORM.id == user_id).first()
     if not user:
         raise credentials_exception
     return user
-
-
-# Seed users for local MVP testing
-seed_admin = User(
-    id=next(_user_id),
-    full_name="Admin User",
-    email="admin@cmas.local",
-    role=UserRole.admin,
-    room_id=None,
-    password_hash=_hash_password("admin123"),
-)
-users[seed_admin.id] = seed_admin
-users_by_email[seed_admin.email.lower()] = seed_admin.id
 
 
 @app.get("/")
@@ -167,26 +143,26 @@ async def health_check():
 
 
 @app.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-async def register(payload: UserCreate) -> UserOut:
-    if _get_user_by_email(payload.email):
+async def register(payload: UserCreate, db: Session = Depends(get_db)) -> UserOut:
+    if _get_user_by_email(db, payload.email):
         raise HTTPException(status_code=409, detail="User with this email already exists")
 
-    user = User(
-        id=next(_user_id),
+    user = UserORM(
         full_name=payload.full_name,
-        email=payload.email,
-        role=payload.role,
+        email=payload.email.lower(),
+        role=payload.role.value,
         room_id=payload.room_id,
         password_hash=_hash_password(payload.password),
     )
-    users[user.id] = user
-    users_by_email[user.email.lower()] = user.id
+    db.add(user)
+    db.commit()
+    db.refresh(user)
     return _to_user_out(user)
 
 
 @app.post("/login", response_model=TokenOut)
-async def login(payload: LoginIn) -> TokenOut:
-    user = _get_user_by_email(payload.email)
+async def login(payload: LoginIn, db: Session = Depends(get_db)) -> TokenOut:
+    user = _get_user_by_email(db, payload.email)
     if not user or not _verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
@@ -195,13 +171,18 @@ async def login(payload: LoginIn) -> TokenOut:
 
 
 @app.get("/users", response_model=list[UserOut])
-async def list_users(_: User = Depends(get_current_user)) -> list[UserOut]:
-    return [_to_user_out(user) for user in users.values()]
+async def list_users(
+    _: UserORM = Depends(get_current_user), db: Session = Depends(get_db)
+) -> list[UserOut]:
+    users = db.query(UserORM).order_by(UserORM.id.asc()).all()
+    return [_to_user_out(user) for user in users]
 
 
 @app.get("/users/{user_id}", response_model=UserOut)
-async def get_user(user_id: int, _: User = Depends(get_current_user)) -> UserOut:
-    user = users.get(user_id)
+async def get_user(
+    user_id: int, _: UserORM = Depends(get_current_user), db: Session = Depends(get_db)
+) -> UserOut:
+    user = db.query(UserORM).filter(UserORM.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return _to_user_out(user)
@@ -211,12 +192,14 @@ async def get_user(user_id: int, _: User = Depends(get_current_user)) -> UserOut
 async def assign_room(
     user_id: int,
     payload: AssignRoomIn,
-    _: User = Depends(get_current_user),
+    _: UserORM = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> UserOut:
-    user = users.get(user_id)
+    user = db.query(UserORM).filter(UserORM.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    updated = user.model_copy(update={"room_id": payload.room_id})
-    users[user_id] = updated
-    return _to_user_out(updated)
+    user.room_id = payload.room_id
+    db.commit()
+    db.refresh(user)
+    return _to_user_out(user)
