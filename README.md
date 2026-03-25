@@ -84,20 +84,38 @@ API:
 
 Задачи:
 - Маршрутизация запросов к микросервисам
-- Проверка JWT (кроме /login, `/register`)
+- Проверка JWT (кроме `/login`, `/register`, `/health`, `/`)
 - Агрегация данных (например: профиль студента + его комната + его заявки)
 
-Пример эндпоинтов Gateway:
-- GET /profile/{id} — запрос в сервис 1 + сервис 2 + сервис 3
-- POST /room/assign — запрос в сервис 2, затем обновление room_id в сервис 1
+Основные эндпоинты Gateway:
+- `POST /register`, `POST /login`
+- `GET /users`, `GET /users/{id}`, `PUT /users/{id}/room`
+- `POST /floors`, `GET /rooms`, `POST /rooms`, `GET /rooms/{id}`
+- `POST /rooms/assign`, `POST /rooms/evict`, `GET /floors/{id}/stats`
+- `GET /requests`, `GET /requests/{id}`, `POST /requests`
+- `PUT /requests/{id}/status`, `GET /requests/room/{room_id}`
+- `POST /requests/{id}/comments`
+- `GET /profile/{id}` — агрегирует данные из users + rooms + requests
+
+Пример использования:
+```bash
+# 1) Логин
+curl -X POST http://localhost:8000/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@cmas.local","password":"admin123"}'
+
+# 2) Использование токена
+curl http://localhost:8000/users \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+```
 
 ---
 
 ## 📦 Взаимодействие между сервисами
 
 1. Заселение студента:
-   - Gateway → Сервис 2 (создать запись проживания)
-   - Сервис 2 → Сервис 1 (обновить room_id у пользователя)
+   - Gateway → `POST /rooms/assign` (Rooms Service)
+   - Gateway → `PUT /users/{id}/room` (Users Service, синхронизация room_id)
    - (синхронно через HTTP/gRPC или асинхронно через RabbitMQ/Kafka)
 
 2. Создание заявки:
@@ -105,9 +123,9 @@ API:
    - Сервис 3 (опционально) → Уведомление коменданту
 
 3. Просмотр профиля:
-   - Gateway → Сервис 1 (данные пользователя)
-   - Gateway → Сервис 2 (комната)
-   - Gateway → Сервис 3 (активные заявки студента)
+   - Gateway → `GET /users/{id}`
+   - Gateway → `GET /rooms/{room_id}` (если комната назначена)
+   - Gateway → `GET /requests?student_id={id}`
 
 ---
 

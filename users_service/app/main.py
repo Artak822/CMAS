@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -34,7 +34,7 @@ JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-key-change-me")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 
@@ -46,17 +46,24 @@ class UserRole(str, Enum):
 
 class UserBase(BaseModel):
     full_name: str = Field(..., min_length=2)
+    phone: str = Field(..., pattern=r"^\+?[0-9]{10,15}$")
+    birth_date: date
     email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     role: UserRole = UserRole.student
-    room_id: int | None = None
 
 
-class UserCreate(UserBase):
+class UserCreate(BaseModel):
+    full_name: str = Field(..., min_length=2)
+    phone: str = Field(..., pattern=r"^\+?[0-9]{10,15}$")
+    birth_date: date
+    email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    role: UserRole = UserRole.student
     password: str = Field(..., min_length=6)
 
 
 class UserOut(UserBase):
     id: int
+    room_id: int | None = None
 
 
 class LoginIn(BaseModel):
@@ -103,6 +110,8 @@ def _to_user_out(user: UserORM) -> UserOut:
     return UserOut(
         id=user.id,
         full_name=user.full_name,
+        phone=user.phone,
+        birth_date=user.birth_date,
         email=user.email,
         role=UserRole(user.role),
         room_id=user.room_id,
@@ -143,15 +152,20 @@ async def health_check():
 
 
 @app.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
-async def register(payload: UserCreate, db: Session = Depends(get_db)) -> UserOut:
+async def register(
+    payload: UserCreate,
+    db: Session = Depends(get_db),
+) -> UserOut:
     if _get_user_by_email(db, payload.email):
         raise HTTPException(status_code=409, detail="User with this email already exists")
 
     user = UserORM(
         full_name=payload.full_name,
+        phone=payload.phone,
+        birth_date=payload.birth_date,
         email=payload.email.lower(),
         role=payload.role.value,
-        room_id=payload.room_id,
+        room_id=None,
         password_hash=_hash_password(payload.password),
     )
     db.add(user)
