@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create .env for docker-compose
+        run: |
+          cat > .env <<'EOF'
+          # JWT
+          JWT_SECRET_KEY=ci-secret-key-change-me
+          JWT_ALGORITHM=HS256
+          ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+          # Users DB
+          USERS_DB_HOST=users_db
+          USERS_DB_PORT=5432
+          USERS_DB_NAME=users_db
+          USERS_DB_USER=postgres
+          USERS_DB_PASSWORD=postgres
+
+          # Rooms DB
+          ROOMS_DB_HOST=rooms_db
+          ROOMS_DB_PORT=5432
+          ROOMS_DB_NAME=rooms_db
+          ROOMS_DB_USER=postgres
+          ROOMS_DB_PASSWORD=postgres
+
+          # Requests DB
+          REQUESTS_DB_HOST=requests_db
+          REQUESTS_DB_PORT=5432
+          REQUESTS_DB_NAME=requests_db
+          REQUESTS_DB_USER=postgres
+          REQUESTS_DB_PASSWORD=postgres
+
+          # Internal service URLs (docker-compose network aliases)
+          USERS_SERVICE_URL=http://users_service:8001
+          ROOMS_SERVICE_URL=http://rooms_service:8002
+          REQUESTS_SERVICE_URL=http://requests_service:8003
+          GATEWAY_URL=http://gateway:8000
+
+          # External ports mapped on the runner
+          GATEWAY_PORT=8000
+          USERS_SERVICE_PORT=8001
+          ROOMS_SERVICE_PORT=8002
+          REQUESTS_SERVICE_PORT=8003
+          EOF
+
+      - name: Start backend services (DB + migrations + API)
+        run: |
+          docker compose up -d --build \
+            users_db rooms_db requests_db \
+            users_service rooms_service requests_service \
+            gateway
+
+      - name: Wait for health endpoints
+        run: |
+          set -euo pipefail
+
+          # Each service has GET /health without touching DB,
+          # but the container startup includes alembic migrations.
+          for url in \
+            "http://localhost:8000/health" \
+            "http://localhost:8001/health" \
+            "http://localhost:8002/health" \
+            "http://localhost:8003/health"
+          do
+            echo "Checking $url"
+            for i in $(seq 1 60); do
+              if curl -fsS "$url" | grep -q "healthy"; then
+                echo "OK: $url"
+                break
+              fi
+              sleep 1
+            done
+          done
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          docker compose logs --no-color --tail=200
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose down -v --remove-orphans
+
