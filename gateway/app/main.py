@@ -14,6 +14,8 @@ from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 from prometheus_fastapi_instrumentator import Instrumentator
 
+from .metrics import MetricsMiddleware
+
 app = FastAPI(
     title="API Gateway",
     description="Единая точка входа для всех микросервисов",
@@ -27,6 +29,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(MetricsMiddleware, service_name="gateway")
 
 Instrumentator().instrument(app).expose(app)
 

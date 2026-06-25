@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from .database import get_db
+from .metrics import MetricsMiddleware
 from .models import UserORM
 
 app = FastAPI(
@@ -31,6 +32,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(MetricsMiddleware, service_name="users")
 
 Instrumentator().instrument(app).expose(app)
 
