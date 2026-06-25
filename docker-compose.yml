@@ -70,7 +70,7 @@ services:
         condition: service_healthy
     volumes:
       - ./users_service:/app
-    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload"
+    command: sh -c "alembic upgrade head && python scripts/seed_admin.py && uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload"
 
   # Rooms Service
   rooms_service:
@@ -112,6 +112,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: cmas_frontend
+    env_file:
+      - .env
     ports:
       - "3000:80"
     depends_on:
@@ -135,7 +137,44 @@ services:
       - ./gateway:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+  # Prometheus — сбор метрик с микросервисов
+  prometheus:
+    build:
+      context: .
+      dockerfile: prometheus/Dockerfile
+    container_name: cmas_prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - gateway
+      - users_service
+      - rooms_service
+      - requests_service
+    volumes:
+      - prometheus_data:/prometheus
+
+  # Grafana — дашборды (логин: admin / admin)
+  grafana:
+    build:
+      context: .
+      dockerfile: grafana/Dockerfile
+    container_name: cmas_grafana
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/etc/grafana/dashboards
+    depends_on:
+      - prometheus
+
 volumes:
   users_db_data:
   rooms_db_data:
   requests_db_data:
+  prometheus_data:
+  grafana_data:

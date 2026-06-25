@@ -7,7 +7,7 @@ from enum import Enum
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field
@@ -39,7 +39,10 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl="/login",
+    description="В поле username укажите email (например admin@cmas.local)",
+)
 
 
 class UserRole(str, Enum):
@@ -71,8 +74,17 @@ class UserOut(UserBase):
 
 
 class LoginIn(BaseModel):
-    email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    email: str = Field(..., min_length=3)
     password: str = Field(..., min_length=1)
+
+
+class UserUpdate(BaseModel):
+    full_name: str | None = Field(default=None, min_length=2)
+    phone: str | None = Field(default=None, pattern=r"^\+?[0-9]{10,15}$")
+    birth_date: date | None = None
+    email: str | None = Field(default=None, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    role: UserRole | None = None
+    room_id: int | None = None
 
 
 class TokenOut(BaseModel):
@@ -178,14 +190,31 @@ async def register(
     return _to_user_out(user)
 
 
-@app.post("/login", response_model=TokenOut)
-async def login(payload: LoginIn, db: Session = Depends(get_db)) -> TokenOut:
-    user = _get_user_by_email(db, payload.email)
-    if not user or not _verify_password(payload.password, user.password_hash):
+def _login_with_credentials(email: str, password: str, db: Session) -> TokenOut:
+    user = _get_user_by_email(db, email)
+    if not user or not _verify_password(password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     token, expires_in = _create_access_token(user)
     return TokenOut(access_token=token, expires_in=expires_in, user=_to_user_out(user))
+
+
+@app.post(
+    "/login",
+    response_model=TokenOut,
+    summary="Логин (OAuth2 form для Swagger Authorize)",
+)
+async def login(
+    form: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+) -> TokenOut:
+    # Swagger OAuth2 передаёт email в поле username
+    return _login_with_credentials(form.username, form.password, db)
+
+
+@app.post("/login/json", response_model=TokenOut, summary="Логин (JSON для Gateway и фронтенда)")
+async def login_json(payload: LoginIn, db: Session = Depends(get_db)) -> TokenOut:
+    return _login_with_credentials(payload.email, payload.password, db)
 
 
 @app.get("/users", response_model=list[UserOut])
@@ -208,6 +237,34 @@ async def get_user(
     user = db.query(UserORM).filter(UserORM.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    return _to_user_out(user)
+
+
+@app.put("/users/{user_id}", response_model=UserOut)
+async def update_user(
+    user_id: int,
+    payload: UserUpdate,
+    _: UserORM = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserOut:
+    user = db.query(UserORM).filter(UserORM.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    data = payload.model_dump(exclude_unset=True)
+    if "email" in data:
+        data["email"] = data["email"].lower()
+        other = db.query(UserORM).filter(UserORM.email == data["email"], UserORM.id != user_id).first()
+        if other:
+            raise HTTPException(status_code=409, detail="User with this email already exists")
+    if "role" in data:
+        data["role"] = data["role"].value
+
+    for key, value in data.items():
+        setattr(user, key, value)
+
+    db.commit()
+    db.refresh(user)
     return _to_user_out(user)
 
 

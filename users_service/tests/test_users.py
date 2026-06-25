@@ -54,7 +54,7 @@ def _register(client: TestClient, data: dict | None = None) -> dict:
 
 
 def _login(client: TestClient, email: str = "ivan@example.com", password: str = "secret123") -> str:
-    resp = client.post("/login", json={"email": email, "password": password})
+    resp = client.post("/login/json", json={"email": email, "password": password})
     return resp.json()["access_token"]
 
 
@@ -105,9 +105,18 @@ class TestRegister:
 
 
 class TestLogin:
+    def test_oauth2_form_login(self, client):
+        _register(client)
+        resp = client.post(
+            "/login",
+            data={"username": USER_DATA["email"], "password": USER_DATA["password"]},
+        )
+        assert resp.status_code == 200
+        assert "access_token" in resp.json()
+
     def test_success(self, client):
         _register(client)
-        resp = client.post("/login", json={"email": USER_DATA["email"], "password": USER_DATA["password"]})
+        resp = client.post("/login/json", json={"email": USER_DATA["email"], "password": USER_DATA["password"]})
         assert resp.status_code == 200
         body = resp.json()
         assert "access_token" in body
@@ -116,11 +125,11 @@ class TestLogin:
 
     def test_wrong_password(self, client):
         _register(client)
-        resp = client.post("/login", json={"email": USER_DATA["email"], "password": "wrongpass"})
+        resp = client.post("/login/json", json={"email": USER_DATA["email"], "password": "wrongpass"})
         assert resp.status_code == 401
 
     def test_unknown_email(self, client):
-        resp = client.post("/login", json={"email": "nobody@example.com", "password": "pass"})
+        resp = client.post("/login/json", json={"email": "nobody@example.com", "password": "pass"})
         assert resp.status_code == 401
 
 
@@ -171,7 +180,7 @@ class TestAssignRoom:
             f"/users/{user['id']}/room",
             json={"room_id": 5},
             headers=_auth(token),
-        )
+        ) 
         assert resp.status_code == 200
         assert resp.json()["room_id"] == 5
 

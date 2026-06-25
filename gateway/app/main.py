@@ -123,7 +123,9 @@ async def _forward_request(
     if response.status_code >= 400:
         detail: Any
         try:
-            detail = response.json()
+            body = response.json()
+            # Микросервисы FastAPI отдают {"detail": ...}; не оборачиваем второй раз.
+            detail = body["detail"] if isinstance(body, dict) and "detail" in body else body
         except ValueError:
             detail = response.text
         raise HTTPException(status_code=response.status_code, detail=detail)
@@ -195,7 +197,7 @@ async def register(payload: RegisterIn):
 )
 async def login(payload: LoginIn):
     return await _forward_request(
-        "POST", USERS_SERVICE_URL, "/login", json=payload.model_dump()
+        "POST", USERS_SERVICE_URL, "/login/json", json=payload.model_dump()
     )
 
 

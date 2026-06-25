@@ -20,7 +20,7 @@ export default function LoginPage() {
       signIn(data)
       navigate('/dashboard')
     } catch (err) {
-      setError(err.response?.data?.detail ?? 'Неверный email или пароль')
+      setError(formatApiError(err, 'Неверный email или пароль'))
     } finally {
       setLoading(false)
     }
@@ -112,6 +112,18 @@ export default function LoginPage() {
       </div>
     </div>
   )
+}
+
+function formatApiError(err, fallback) {
+  const detail = err.response?.data?.detail
+  if (!detail) return err.message?.includes('422') ? 'Проверьте формат email (нужен вид name@domain.com)' : fallback
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) return detail.map((d) => `${d.loc?.at(-1) ?? 'поле'}: ${d.msg}`).join(' | ')
+  if (typeof detail === 'object' && Array.isArray(detail.detail)) {
+    return detail.detail.map((d) => `${d.loc?.at(-1) ?? 'поле'}: ${d.msg}`).join(' | ')
+  }
+  if (typeof detail === 'object' && typeof detail.detail === 'string') return detail.detail
+  return fallback
 }
 
 function FormField({ label, children }) {
